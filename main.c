@@ -73,6 +73,7 @@ void init_hw(void)
 volatile uint8_t mute_line=1;
 volatile uint8_t beep_18=1;
 volatile uint8_t call_in=0;
+volatile uint8_t call_send=0;
 volatile uint8_t enc_btn=0;
 volatile uint8_t mic_pwr=0;
 volatile uint8_t mic_gain=0;
@@ -123,6 +124,10 @@ void update_gpio(void)
 			PORTD|= _BV(3); // +20 (*) +20
 			break;
 	}
+	if (call_send)
+		PORTA|=_BV(0);
+	else
+		PORTA&=~_BV(0);
 }
 
 void init_beep(void)
@@ -414,9 +419,6 @@ typedef enum {
 
 twi_target_t twi_target = tgt_pcfFrontWrite;
 
-enum {
-	PCF_OUT_MASK = 0x00
-};
 
 uint8_t twi_buffer[3];
 uint8_t twi_tasksel=0;
@@ -429,7 +431,7 @@ void i2c_task(void)
 	switch (twi_tasksel)
 	{
 		case tgt_pcfFrontWrite:
-			twi_buffer[0] = (front_out | (~PCF_OUT_MASK));
+			twi_buffer[0] = (front_out | (~frontOuputMask));
 			_twi_send_data(0x40, twi_buffer, 1);
 			twi_tasksel = tgt_pcfFrontQuery;
 			break;
@@ -502,6 +504,8 @@ int main(void) {
 	uint8_t button_Enc = button_register(btnEncoder);
 	uint8_t button_PTT = button_register(btnPTT);
 	uint8_t button_Call = button_register(btnCall);
+	uint8_t tmr_LastPTT = timer_reg();
+	uint8_t ptt_hold=0;
 	uint16_t old_systick=0;
 	while(1) {
 		update_gpio();
@@ -516,6 +520,54 @@ int main(void) {
 			button_proc(button_Call, (front_inp & _BV(6))?0:1);
 			old_systick = systick;
 		}
+		uint16_t evt = event_get();
+		switch(evt & btnMask)
+		{
+			case btnEncoder:
+				if (evt & evtDown)
+				{
+					mute_line = 1 - mute_line;
+					push_tone(1, mute_line?400:800, 50, 6);
+					push_tone(0,  0, 50, 6);
+					push_tone(0, mute_line?400:800, 50, 6);
+				}
+				break;
+			case btnPTT:
+				if (evt & evtDown)
+				{
+					mic_mute = 0;
+					mute_line = 0;
+					if (ptt_hold)
+					{
+						ptt_hold=0;
+						push_tone(1, 400, 50, 6);
+					}
+					else
+					{
+						if (!timer_expired(tmr_LastPTT))
+						{
+							ptt_hold = 1;
+							push_tone(1, 800, 150, 6);
+						}
+					}
+					timer_set(tmr_LastPTT, 300);
+				}
+				break;
+		}
+		if (button_state(button_PTT) || ptt_hold)
+		{
+			mic_mute = 0;
+			front_out &= ~frontLEDPtt;
+		}
+		else
+		{
+			if (timer_expired(tmr_LastPTT))
+			{
+				mic_mute = 1;
+				front_out |= frontLEDPtt;
+			}
+		}
+		call_send = button_state(button_Call);
 
 
 		if (timer_expired(tmr_blink))
@@ -523,13 +575,12 @@ int main(void) {
 			update_gpio();
 			timer_set(tmr_blink, 1000);
 
-			if (mute_line)
-				buffer[0] = 0xff^(ctr& 0x01);
+			if ((mute_line) && (ctr&1))
+				front_out |= frontLED1;
 			else
-				buffer[0]=0xfe;
-			_twi_send_data(0x40, buffer, 1);
-			ctr++;
+				front_out &= ~frontLED1;
 
+			ctr++;
 		}
 	}
 }

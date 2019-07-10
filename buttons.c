@@ -6,12 +6,12 @@ volatile uint8_t __evt_queued = 0;
 volatile uint16_t eventQueue[16];
 
 #define MAX_BUTTONS 8
-#define DETECT_THRESH 5
-#define DEBOUNCE_MAX 4
-#define SHORT_THRESH 250
-#define HOLD_THRESH 1500
+#define DETECT_THRESH 10
+#define DEBOUNCE_MAX 15
+#define SHORT_THRESH 200
+#define HOLD_THRESH 2500
 #define REPEAT_THRESH 250
-#define REPEAT_RATE 50
+#define REPEAT_RATE 100
 
 struct btn_context
 {
@@ -48,6 +48,13 @@ void event_push(uint16_t evt)
 	evt_queue_wr&=0x0f;
 	++__evt_queued;
 }
+uint8_t button_state(uint8_t id)
+{
+	if (id>=nButtons)
+		return;
+	struct btn_context * ctx = &__btnCtx[id];
+	return ctx->last_state;
+}
 
 void button_proc(uint8_t id, uint8_t state)
 {
@@ -65,8 +72,12 @@ void button_proc(uint8_t id, uint8_t state)
 				event_push(evtPressed | code);
 				ctx->debounce_counter = DEBOUNCE_MAX;
 				ctx->last_state = 1;
-				ctx->repeat_ctr = REPEAT_THRESH;
 			}
+			ctx->repeat_ctr = REPEAT_THRESH;
+		}
+		else
+		{
+			ctx->debounce_counter = DEBOUNCE_MAX;
 		}
 		if (ctx->repeat_ctr == 0)
 		{
@@ -80,8 +91,10 @@ void button_proc(uint8_t id, uint8_t state)
 		{
 			ctx->repeat_ctr--;
 		}
+
 		if (ctx->hold_counter == HOLD_THRESH)
 			event_push(evtHold | code);
+
 		if (ctx->hold_counter < 8000) // value is arbitrary but larger than long hold value
 			++ctx->hold_counter;
 	}
@@ -97,7 +110,7 @@ void button_proc(uint8_t id, uint8_t state)
 				           );
 			}
 			ctx->last_state = 0;
-			ctx->repeat_ctr = 0;
+			ctx->repeat_ctr = REPEAT_THRESH;
 			ctx->hold_counter = 0;
 		}
 		else

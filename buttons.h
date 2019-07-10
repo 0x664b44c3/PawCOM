@@ -28,4 +28,5 @@ struct btn_context * button_createContext(void);
 
 void button_proc(uint8_t id, uint8_t state);
 uint8_t button_register(uint8_t code);
+uint8_t button_state(uint8_t id);
 #endif // BUTTONS_H
