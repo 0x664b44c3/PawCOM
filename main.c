@@ -1,41 +1,14 @@
 #include <string.h>
 #include <inttypes.h>
-#include <avr/io.h>
 #include <avr/interrupt.h>
-#include <avr/pgmspace.h>
+#include <avr/eeprom.h>
 #include <util/delay.h>
 #include <stdio.h>
 #include "i2c.h"
 #include "gptimer.h"
-#include <buttons.h>
-
-const uint8_t sine_tab[] = {0x80, 0x8c, 0x98, 0xa4, 0xb0, 0xbb, 0xc6, 0xd0,
-                            0xd9, 0xe2, 0xe9, 0xf0, 0xf5, 0xf9, 0xfc, 0xfe,
-                            0xfe, 0xfe, 0xfc, 0xf9, 0xf5, 0xf0, 0xe9, 0xe2,
-                            0xd9, 0xd0, 0xc6, 0xbb, 0xb0, 0xa4, 0x98, 0x8c,
-                            0x80, 0x73, 0x67, 0x5b, 0x4f, 0x44, 0x39, 0x2f,
-                            0x26, 0x1d, 0x16, 0x10, 0x0a, 0x06, 0x03, 0x01,
-                            0x01, 0x01, 0x03, 0x06, 0x0a, 0x0f, 0x16, 0x1d,
-                            0x26, 0x2f, 0x39, 0x44, 0x4f, 0x5b, 0x67, 0x73};
-inline uint8_t sineLookup(uint8_t in) {
-	uint8_t v1=0, v2=0;
-	uint8_t step = in>>2;
-	uint8_t sub=in&3;
-	v1 = sine_tab[step++];
-	if ((step<sizeof(sine_tab))&&(sub)) {
-		uint16_t accu=0;
-		v2 = sine_tab[step];
-		for (register uint8_t i=0;i<4;++i) {
-			if (i<sub)
-				accu+=v2;
-			else
-				accu+=v1;
-		}
-		accu>>=2;
-		v1=accu;
-	}
-	return v1;
-}
+#include "buttons.h"
+#include "hardware.h"
+#include "crc.h"
 
 typedef union {
 	uint16_t u16;
@@ -50,221 +23,65 @@ enum pcfBits {
 	frontLED2 = 0x02,
 	frontLED3 = 0x04,
 	frontLED4 = 0x08,
+	frontLEDs = 0x0f,
 	frontLEDPtt = 0x10,
 	frontBtnPtt = 0x20,
 	frontBtnCall= 0x40,
-	frontLedCall= 0x80,
-	frontOuputMask=0x9f
+	frontLedCall= 0x80u,
+	frontOuputMask=0x9fu
 };
 
-void init_hw(void)
-{
-	DDRA = 0x09;
-	DDRB = 0xde;
-	PORTC = 0xe8;
-	DDRC = 0x08;
-	PORTD = 0x04;
-	DDRD = 0x3e;
 
-    SPCR0 = _BV(SPE0)|_BV(MSTR0)|_BV(SPR00)|_BV(DORD0);
-}
+#define MENU_HOLD_TIME 10000
 
+//countdown counter for call lamp
+uint8_t call_sig=0;
 
-volatile uint8_t mute_line=1;
-volatile uint8_t beep_18=1;
-volatile uint8_t call_in=0;
-volatile uint8_t call_send=0;
-volatile uint8_t enc_btn=0;
-volatile uint8_t mic_pwr=0;
-volatile uint8_t mic_gain=0;
-volatile uint8_t mic_mute=0;
-
-void update_gpio(void)
-{
-	if (mute_line)
-		PORTB&=~_BV(2);
-	else
-		PORTB|=_BV(2);
-
-	if (beep_18)
-		PORTB|=_BV(1);
-	else
-		PORTB&=~_BV(1);
-
-	call_in = (PINB & _BV(0))==0;
-	enc_btn = (PINC&_BV(5))?0:1;
-
-	if (mic_pwr)
-		PORTC&= ~_BV(3);
-	else
-		PORTC |= _BV(3);
-
-	if (mic_mute)
-		PORTD|= _BV(2);
-	else
-		PORTD&=~_BV(2);
-
-	switch(mic_gain)
-	{
-		case 0:
-			PORTD|= _BV(4); // -10 (*)
-			PORTD&=~_BV(3); // +20 ( ) -10
-			break;
-		case 1:
-			PORTD&=~_BV(4); // -10 ( )
-			PORTD&=~_BV(3); // +20 ( ) 0
-			break;
-		case 2:
-			PORTD|= _BV(4); // -10 (*)
-			PORTD|= _BV(3); // +20 (*) +10
-			break;
-		case 3:
-		default:
-			PORTD&=~_BV(4); // -10 ( )
-			PORTD|= _BV(3); // +20 (*) +20
-			break;
-	}
-	if (call_send)
-		PORTA|=_BV(0);
-	else
-		PORTA&=~_BV(0);
-}
-
-void init_beep(void)
-{
-	//PWM stage 0A on
-	TCCR0A = _BV(WGM00) | _BV(WGM01) | _BV(COM0A1);
-	TCCR0B = 1;
-	OCR0A = 0x80;
-}
-
-volatile uint8_t tone_accu=0, tone_vol=0x7f;
-volatile uint8_t tone_inc = 0;
-volatile uint8_t cycle;
-static inline void do_audio(void)
-{
-	if (tone_inc)
-	{
-		int16_t tone = sineLookup(tone_accu);
-		tone -=128;
-		tone *=tone_vol;
-		tone/=256;
-		tone+=128;
-
-		OCR0A=tone;//(tone_accu&128)?0x80 + tone_vol: 0x80-tone_vol;
-		tone_accu+=tone_inc;
-	}
-	else
-	{
-		OCR0A=0x80;
-	}
-}
-
-uint8_t oldPins=0;
-int8_t enc_ctr=0;
-ISR(TIMER2_OVF_vect) // 8kHz
-{	do_audio();
-	uint8_t pins = PINC&0xc0;
-	if (oldPins!=pins)
-	{
-		if (pins == 0x00)
-		{
-			if (oldPins == 0x80)
-				enc_ctr--;
-			if (oldPins == 0x40)
-				enc_ctr++;
-		}
-	}
-	oldPins = pins;
-}
-
-void init_timers(void)
-{
-	timer_init();
-	TCCR2A =  _BV(WGM20) | _BV(WGM21);
-	TCCR2B =  _BV(WGM22) | 2;
-	OCR2A = 249;
-	TIMSK2 = _BV(OCIE2A) | _BV(TOIE2);
-}
-
-struct tone_task
-{
-	uint8_t volume;
-	uint16_t freq;
-	uint16_t duration;
-};
-struct tone_task toneQueue[8];
-uint8_t tones_queued=0;
-
-void push_tone(uint8_t replace, uint16_t freq, uint16_t duration, uint8_t volume)
-{
-	if (replace)
-		tones_queued=0;
-	if (tones_queued == 8)
-		tones_queued=7;
-	toneQueue[tones_queued].freq = freq;
-	toneQueue[tones_queued].duration = duration;
-	toneQueue[tones_queued].volume = volume;
-	++tones_queued;
-}
-
+//tone duration timer
 uint8_t tmr_tones=TMR_INVALID;
+//call signalling timneout
+uint8_t tmr_call_delay=TMR_INVALID;
+//beeper mode
 uint8_t tone_mode = 0;
 
 
-const uint8_t volumes[6] = {127,  // 0dB
-                            90,  // -3dB
-                            64,  // -6dB
-                            45,  // -9dB
-                            32,  // -12dB
-                            23   // -15dB
-                           };
-
-uint8_t call_vol = 4;
-void beep_setvol(uint8_t volume)
-{
-	uint8_t tmp = volume;
-	if (volume)
-	{
-		if (tmp>12)
-			tmp=12;
-		tmp--;
-		tone_vol = volumes[5 - (tmp%6)];
-		beep_18 = (tmp>5)?0:1;
-		update_gpio();
-	}
-	else
-	{
-		tone_vol = 0;
-	}
-}
-
+extern volatile uint8_t tone_inc;
 void signalling_task(void)
 {
 	if (tmr_tones == TMR_INVALID)
 		tmr_tones = timer_reg();
+	if (tmr_call_delay == TMR_INVALID)
+		tmr_call_delay = timer_reg();
+
 	if (call_in)
 	{
-		tones_queued = 0;
+		call_sig = 16;
 		mute_line = 0;
-		if (tone_mode==0)
+
+		if (timer_expired(tmr_call_delay))
 		{
-			tone_inc=32;
-			timer_set(tmr_tones, 125);
-			tone_mode=1;
-		}
-		else
-		{
-			if (timer_expired(tmr_tones))
+			tones_queued = 0;
+			if (tone_mode==0)
 			{
-				beep_setvol(call_vol);
+				beep_setvol(sysCfg.call_vol);
+				tone_inc=32;
 				timer_set(tmr_tones, 125);
-				tone_inc=32-tone_inc;
+				tone_mode=1;
+			}
+			else
+			{
+				if (timer_expired(tmr_tones))
+				{
+					beep_setvol(sysCfg.call_vol);
+					timer_set(tmr_tones, 125);
+					tone_inc=32-tone_inc;
+				}
 			}
 		}
 	}
 	else
 	{
+		timer_set(tmr_call_delay, 3000);
 		if (tone_mode)
 			timer_set(tmr_tones, 0);
 
@@ -285,13 +102,12 @@ void signalling_task(void)
 				if (inc)
 				{
 					inc*=256;
-					inc/=8000;
+					inc/=16000;
 					tone_inc = inc;
 				}
 				else
 					tone_inc = 0;
 				timer_set(tmr_tones, toneQueue[0].duration);
-//				tone_inc = 64;
 				for(uint8_t i=0; i<7;++i)
 					toneQueue[i] = toneQueue[i+1];
 				--tones_queued;
@@ -305,38 +121,31 @@ uint8_t enc_old=0;
 enum
 {
 	lvlVolume=0,
-	lvlSideTone=1
+	lvlSideTone=1,
+	lvlMicGain=2
 };
 uint8_t menu_level = lvlVolume;
 
-uint8_t main_volume = 0x00;
-uint8_t sidetone    = 0x0f;
-
-void update_volume(void)
-{
-	static uint8_t buffer[2];
-	buffer[0] = 0x00 | ((31 - main_volume) & 0x1f);
-	buffer[1] = 0x40 | ((31 - main_volume) & 0x1f);
-	_twi_send_data(0x52, buffer, 2);
-	__twi_wait_ready();
-}
-
-void update_sidetone( void )
-{
-	static uint8_t buffer[2];
-	buffer[0] = 0x00;
-	buffer[1] = sidetone * 0x11;
-	_twi_send_data(0x50, buffer, 2);
-}
+uint8_t tmr_menuEscape = TMR_INVALID;
 
 uint8_t old_btn_press=0;
 uint8_t tmr_btn_press = 0xff;
-enum {
-	encBtnDown,
-	encBtnUp,
-	encBtnLong,
-	encBtnDouble
-};
+
+void save_config( void )
+{
+	sysCfg.crc = crc8(&sysCfg, sizeof(struct configBlock) - 1);
+	eeprom_write_block(&sysCfg, (void*) 0x10, sizeof(struct configBlock));
+}
+
+void menu_finish( void )
+{
+	push_tone(1,800, 100, 10);
+	push_tone(0,600, 100, 10);
+	menu_level = lvlVolume;
+	save_config();
+}
+
+
 void encoder_task(void)
 {
 	if (TMR_INVALID == tmr_btn_press)
@@ -345,6 +154,10 @@ void encoder_task(void)
 	}
 
 	int8_t delta = enc_ctr - enc_old;
+
+	if ((menu_level != lvlVolume) && (delta))
+		timer_set(tmr_menuEscape, MENU_HOLD_TIME);
+
 	switch (menu_level) {
 		case lvlVolume:
 			if (delta)
@@ -354,9 +167,9 @@ void encoder_task(void)
 			}
 			if (delta > 0)
 			{
-				if (main_volume < 31)
+				if (sysCfg.volume < 31)
 				{
-					++main_volume;
+					++sysCfg.volume;
 					update_volume();
 					push_tone(1,2000,15,9);
 				}
@@ -369,9 +182,9 @@ void encoder_task(void)
 			}
 			if (delta < 0)
 			{
-				if (main_volume > 0)
+				if (sysCfg.volume > 0)
 				{
-					--main_volume;
+					--sysCfg.volume;
 					update_volume();
 					push_tone(1,2000,15,9);
 				}
@@ -386,26 +199,36 @@ void encoder_task(void)
 		case lvlSideTone:
 			if (delta)
 			{
-				if ((delta > 0) && (sidetone<15))
+				if ((delta > 0) && (sysCfg.sidetone<15))
 				{
-					sidetone++;
+					sysCfg.sidetone++;
 				}
-				if ((delta < 0) && (sidetone>0))
+				if ((delta < 0) && (sysCfg.sidetone>0))
 				{
-					sidetone--;
+					sysCfg.sidetone--;
 				}
+				update_sidetone();
 				push_tone(1,2000,15,9);
-//				twi_buffer[0] = 0x00;
-//				twi_buffer[1] = sidetone * 0x10;
-//				_twi_send_data(0x50, twi_buffer, 2);
 			}
 			break;
+		case lvlMicGain:
+			if (delta)
+			{
+				if ((delta > 0) && (sysCfg.mic_gain_and_pwr & cfgMicGainMask) < 3)
+				{
+					sysCfg.mic_gain_and_pwr++;
+				}
+				if ((delta < 0) && (sysCfg.mic_gain_and_pwr & cfgMicGainMask) >0)
+				{
+					sysCfg.mic_gain_and_pwr--;
+				}
+				push_tone(1,2000,15,9);
+			}
 		default:
 			break;
 	}
-
-
 	enc_old = enc_ctr;
+
 }
 
 typedef enum {
@@ -449,13 +272,13 @@ void i2c_task(void)
 
 int main(void) {
 
-
-
 	uint8_t buffer[8];
 	init_hw();
 	init_timers();
 	init_beep();
 	_i2c_init();
+
+	tmr_menuEscape = timer_reg();
 
 	sei();
 
@@ -464,38 +287,56 @@ int main(void) {
 	buffer[0] = 0x80;
 	buffer[1] = 0x9c;
 	_twi_send_data(0x50, buffer, 2);
-
-	_delay_ms(1);
+	__twi_wait_ready();
 	buffer[0] = 0x00;
 	buffer[1] = 0xff;
 	_twi_send_data(0x50, buffer, 2);
-	_delay_ms(1);
+	__twi_wait_ready();
 	buffer[0] = 0x00 | 0x1f;
 	buffer[1] = 0x40 | 0x1f;
 	buffer[2] = 0x84;
 	_twi_send_data(0x52, buffer, 3);
+	__twi_wait_ready();
 
 	mute_line = 0;
-	mic_pwr = 1;
-	tone_vol = 0x7f;
-	mic_gain= 0;
-	mic_mute = 0;
+
+	mic_mute = 1;
 	beep_18 = 0;
 	uint8_t tmr_blink = timer_reg();
-	mute_line = 1;
 	update_gpio();
 
-	//load settings
-	main_volume = 10;
-	sidetone = 0x0f;
+	eeprom_read_block(&sysCfg, (void*) 0x10, sizeof(struct configBlock));
+	uint8_t actual_crc = crc8(&sysCfg, sizeof(struct configBlock) - 1);
+	if (sysCfg.crc != actual_crc)
+	{
+		sysCfg.mic_gain_and_pwr = 0x80;
+		sysCfg.call_vol = 10;
+		sysCfg.sidetone = 0x0f;
+	}
+
+	sysCfg.volume = 15;
+
+	//default settings
+
+	update_sidetone();
 	update_volume();
 
-
-	push_tone(1, 250, 100, 6);
-	push_tone(0, 0, 50, 6);
-	push_tone(0, 500, 100, 6);
-	push_tone(0, 0, 50, 6);
-	push_tone(0, 1000, 100, 6);
+	if (sysCfg.crc == actual_crc)
+	{
+		push_tone(1, 250, 100, 6);
+		push_tone(0, 0, 50, 6);
+		push_tone(0, 500, 100, 6);
+		push_tone(0, 0, 50, 6);
+		push_tone(0, 1000, 100, 6);
+	}
+	else
+	{
+		push_tone(1, 250, 100, 6);
+		push_tone(0, 0, 50, 6);
+		push_tone(0, 250, 100, 6);
+		push_tone(0, 0, 50, 6);
+		push_tone(0, 250, 100, 6);
+	}
 	__twi_wait_ready();
 	buffer[0] = 0x00;
 	_twi_send_data(0x40, buffer, 1);
@@ -507,6 +348,13 @@ int main(void) {
 	uint8_t tmr_LastPTT = timer_reg();
 	uint8_t ptt_hold=0;
 	uint16_t old_systick=0;
+
+	//wait till beep sequence done
+	while(tones_queued)
+	{
+		update_gpio();
+		signalling_task();
+	}
 	while(1) {
 		update_gpio();
 		signalling_task();
@@ -524,13 +372,44 @@ int main(void) {
 		switch(evt & btnMask)
 		{
 			case btnEncoder:
-				if (evt & evtDown)
+			{ //this is a bit more complex....
+				switch(menu_level)
 				{
-					mute_line = 1 - mute_line;
-					push_tone(1, mute_line?400:800, 50, 6);
-					push_tone(0,  0, 50, 6);
-					push_tone(0, mute_line?400:800, 50, 6);
+					case lvlVolume:
+						if (evt & evtDown)
+						{
+							mute_line = 1 - mute_line;
+							push_tone(1, mute_line?400:800, 50, 6);
+							push_tone(0,  0, 50, 6);
+							push_tone(0, mute_line?400:800, 50, 6);
+						}
+						if (evt & evtHold)
+						{
+							mute_line = 0;
+							push_tone(1,800, 1000, 10);
+							menu_level = lvlSideTone;
+							timer_set(tmr_menuEscape, MENU_HOLD_TIME);
+						}
+						break;
+					case lvlSideTone:
+						if (evt & evtDown)
+						{
+							menu_level = lvlMicGain;
+							push_tone(1,800, 250, 10);
+							timer_set(tmr_menuEscape, MENU_HOLD_TIME);
+						}
+						break;
+					case lvlMicGain:
+						if (evt & evtDown)
+						{
+							menu_level = lvlVolume;
+							menu_finish();
+						}
+						break;
+					default:
+						menu_level = lvlVolume;
 				}
+			}
 				break;
 			case btnPTT:
 				if (evt & evtDown)
@@ -553,33 +432,88 @@ int main(void) {
 					timer_set(tmr_LastPTT, 300);
 				}
 				break;
+			case btnCall:
+				if (menu_level != lvlMicGain)
+					break;
+				if (evt & evtDown)
+				{
+					timer_set(tmr_menuEscape, MENU_HOLD_TIME);
+					sysCfg.mic_gain_and_pwr ^= cfgMicPower;
+				}
 		}
 		if (button_state(button_PTT) || ptt_hold)
 		{
 			mic_mute = 0;
-			front_out &= ~frontLEDPtt;
 		}
 		else
 		{
 			if (timer_expired(tmr_LastPTT))
 			{
 				mic_mute = 1;
-				front_out |= frontLEDPtt;
 			}
 		}
-		call_send = button_state(button_Call);
+		if (menu_level != lvlMicGain)
+			call_send = button_state(button_Call);
 
+
+
+
+		uint8_t leds = 0;
 
 		if (timer_expired(tmr_blink))
 		{
 			update_gpio();
-			timer_set(tmr_blink, 1000);
+			timer_set(tmr_blink, 125);
 
-			if ((mute_line) && (ctr&1))
-				front_out |= frontLED1;
-			else
-				front_out &= ~frontLED1;
+			if ((call_sig) && (ctr & 2))
+			{
+				leds |= frontLedCall;
+				if (ctr&1)
+					--call_sig;
+			}
 
+
+			switch (menu_level)
+			{
+				case lvlVolume:
+					if ((mute_line == 0) || (ctr&4))
+						leds |= frontLED1;
+					break;
+				case lvlSideTone:
+					leds |=frontLED2;
+					break;
+
+				case lvlMicGain:
+					switch (sysCfg.mic_gain_and_pwr & cfgMicGainMask)
+					{
+						case 0:
+							leds = 0x0f ^ 0x01;
+							break;
+						case 1:
+							leds = 0x0f ^ 0x02;
+							break;
+						case 2:
+							leds = 0x0f ^ 0x04;
+							break;
+						case 3:
+						default:
+							leds = 0x0f ^ 0x08;
+							break;
+					}
+
+					if (ctr&2)
+						leds = 0x0f;
+
+					if (sysCfg.mic_gain_and_pwr & cfgMicPower)
+						leds|= frontLedCall;
+					break;
+			}
+			if (mic_mute == 0)
+				leds |= frontLEDPtt;
+			front_out = ~leds;
+
+			if (timer_expired(tmr_menuEscape) && (menu_level!=lvlVolume))
+				menu_finish();
 			ctr++;
 		}
 	}

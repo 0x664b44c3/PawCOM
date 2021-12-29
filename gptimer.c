@@ -28,7 +28,7 @@ static inline void timer_tick()
 volatile uint8_t cycle=0;
 ISR(TIMER2_COMPA_vect) // 8kHz
 {
-	cycle+=32;
+	cycle+=16;
 	if (cycle==0 )
 		timer_tick();
 

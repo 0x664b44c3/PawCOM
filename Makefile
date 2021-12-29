@@ -62,7 +62,7 @@ TARGET = beltpack
 
 # List C source files here. (C dependencies are automatically generated.)
 SRC = main.c
-SRC+=twi.c gptimer.c buttons.c
+SRC+=twi.c gptimer.c buttons.c crc.c hardware.c
 #vfd.c
 #$(TARGET).c
 

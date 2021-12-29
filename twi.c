@@ -36,7 +36,7 @@ void _i2c_init(void) {
 	TWCR0 = 0;
 	asm("nop");
 	TWSR0 = _BV(TWPS00);
-	TWBR0 = 32;
+	TWBR0 = 16;
 	TWCR0 |= _BV(TWEN0)|_BV(TWIE0);
 }
 
