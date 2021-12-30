@@ -1,6 +1,8 @@
 # PawCOM - a Partyline Analog (Wired) intercom system
 
-## Scope of this project
+An open source intercom system with professional features.
+
+## Abstract
 This projects implements a partyline analog intercom system as used in the tv and event industry for interconnecting small teams of technical staff.
 
 The system consists of any number from 2 up of so-called beltpacks, portable intercom stations plus a central power supply.
