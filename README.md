@@ -10,4 +10,5 @@ add a few extra features.
 
 ## Further reading and other projects about Partyline
 
-
+You may have a look at the fnordcom project that has compiled a number of schematics and information around
+older clearcom intercom systems: https://github.com/pc-coholic/fnordcom
