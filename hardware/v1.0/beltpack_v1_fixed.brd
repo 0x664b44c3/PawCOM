@@ -5128,7 +5128,9 @@ design rules under a new name.</description>
 <wire x1="61.9125" y1="37.0078" x2="61.9125" y2="36.305" width="0.254" layer="1"/>
 <wire x1="61.9125" y1="36.305" x2="62.5475" y2="35.67" width="0.254" layer="1"/>
 <contactref element="C61" pad="-"/>
-<wire x1="66.04" y1="68.58" x2="69.5325" y2="67.64" width="0" layer="19" extent="1-1"/>
+<wire x1="69.5325" y1="67.64" x2="69.5325" y2="68.8975" width="0.3" layer="1"/>
+<wire x1="69.5325" y1="68.8975" x2="68.58" y2="69.85" width="0.3" layer="1"/>
+<wire x1="68.58" y1="69.85" x2="64.77" y2="69.85" width="0.3" layer="1"/>
 </signal>
 <signal name="BEEP_AUDIO">
 <contactref element="R11" pad="2"/>
