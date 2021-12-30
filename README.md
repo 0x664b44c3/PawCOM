@@ -33,3 +33,8 @@ add a few extra features.
 
 You may have a look at the fnordcom project that has compiled a number of schematics and information around
 older clearcom intercom systems: https://github.com/pc-coholic/fnordcom
+
+## Versions and known issues
+
+Version 1.0 has two bugs; one being in the feedback path of IC2C, the second being the mic compressor/limiter detector which should be connected to the output of the attenuator switch
+but before the transmit switch. It's currently connected to the output of the mic amplifier.
